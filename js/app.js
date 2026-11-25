@@ -1,7 +1,7 @@
 // Bvndito Cutsss · app del barbero (semana de prueba).
 // Todo se dibuja como texto HTML desde el estado E y se vuelve a dibujar cuando cambian los datos.
 import { firebaseConfig } from './config.js';
-import { iniciar, entrar, db, doc, collection, onSnapshot, setDoc, query, where, getDocs, writeBatch, arrayUnion, runTransaction } from './db.js';
+import { iniciar, entrar, db, doc, collection, onSnapshot, setDoc, query, where, getDocs, writeBatch, arrayUnion } from './db.js';
 import { hoyISO, hhmm, sumarDias, lunesDe, deISO, fechaCorta, fechaLarga, normal, tel8, capitalizar, primerNombre, esc, pesos, idAzar, leerLocal, guardarLocal, comprimir, EMU, CONFIG_EMU } from './comun.js';
 
 /* ---------- Negocio ---------- */
@@ -629,22 +629,20 @@ function oirLlegadas() {
   onSnapshot(collection(db, 'locales', E.p, 'llegadas'), (s) => { E.llegadas = s.docs; procesarLlegadas(); },
     (e) => { console.error('llegadas', e); oyendoLlegadas = false; setTimeout(oirLlegadas, 15000); });
 }
-// Cada aviso se procesa dentro de una transacción que lo borra: si la app está abierta en dos lados
-// (por ejemplo Safari y el ícono de inicio), solo uno lo convierte en cita.
+// Cada aviso se convierte en cita con un id que sale del id del aviso ("ll" + id): si la app está abierta
+// en dos lados (por ejemplo Safari y el ícono de inicio), los dos escriben el mismo documento y no se duplica.
 function procesarLlegadas() {
   if (!E.cargado.clientes || !E.cargado.citas) return;
   for (const d of E.llegadas) {
     if (E.procesados.has(d.id)) continue;
     E.procesados.add(d.id);
-    const refLl = doc(db, 'locales', E.p, 'llegadas', d.id);
-    runTransaction(db, async (tx) => {
-      const s = await tx.get(refLl);
-      if (!s.exists()) return null;
-      return convertirLlegada(tx, refLl, s.data());
-    }).then((aviso) => { if (aviso) avisa(aviso[0], aviso[1]); }).catch((e) => { console.error('llegada', e); E.procesados.delete(d.id); });
+    const b = writeBatch(db);
+    const aviso = convertirLlegada(b, doc(db, 'locales', E.p, 'llegadas', d.id), d.data(), d.id);
+    b.commit().catch((e) => { console.error('llegada', e); E.procesados.delete(d.id); });
+    if (aviso) avisa(aviso[0], aviso[1]);
   }
 }
-function convertirLlegada(b, refLl, x) {
+function convertirLlegada(b, refLl, x, llId) {
   const cuando = x.ts && x.ts.toDate ? x.ts.toDate() : new Date();
   b.delete(refLl);
   if (hoyISO(cuando) !== hoyISO()) return null;
@@ -664,8 +662,8 @@ function convertirLlegada(b, refLl, x) {
       E.cmp[cita.id] = undefined;
     } else {
       let id = c && c.id;
-      if (!id) { id = nuevoId('clientes'); b.set(ref('clientes', id), { n: capitalizar(x.nombre), tel: x.tel || '', corte: [], vis: 0, creado: Date.now() }); }
-      b.set(ref('citas', nuevoId('citas')), { fecha: hoy, h: hora, cl: id, serv: 'basico', est: 'llego', llego: hora, sinHora: true, conHora: !!x.conHora, creado: Date.now() });
+      if (!id) { id = 'll' + llId; b.set(ref('clientes', id), { n: capitalizar(x.nombre), tel: x.tel || '', corte: [], vis: 0, creado: Date.now() }, { merge: true }); }
+      b.set(ref('citas', 'll' + llId), { fecha: hoy, h: hora, cl: id, serv: 'basico', est: 'llego', llego: hora, sinHora: true, conHora: !!x.conHora, creado: Date.now() }, { merge: true });
     }
     return [`${capitalizar(primerNombre(x.nombre))} llegó`, cita ? `Su hora ${cita.h}` : 'Sin hora: quedó en la fila'];
   }
