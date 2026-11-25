@@ -1,0 +1,64 @@
+rules_version = '2';
+
+// Bvndito Cutsss · app del barbero + página "Llegué" del QR.
+//
+// /barberias/{codigo}/{coleccion}/{doc}
+//   Datos del barbero. Entra quien tiene sesión (anónima) y conoce el código largo de su link.
+//   No hay regla para listar /barberias, así que los códigos no se pueden descubrir.
+//
+// /locales/{publico}
+//   Ficha mínima del local que va en el QR. Guarda el código del barbero ("sello") y los
+//   teléfonos (uid) del barbero que pueden leer las llegadas. Nadie más la puede leer.
+//   Un teléfono se suma como dueño solo si manda el sello correcto.
+//
+// /locales/{publico}/llegadas/{id}
+//   El cliente que escanea el QR solo puede CREAR un aviso (nombre, teléfono, si tiene hora).
+//   No puede leer, cambiar ni borrar nada. Solo los dueños leen y borran.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function codigoOk(c) {
+      return c is string && c.size() >= 24 && c.size() <= 64 && c.matches('^[A-Za-z0-9]+$');
+    }
+    function conSesion() { return request.auth != null; }
+    function esDueno(p) {
+      return conSesion() && request.auth.uid in get(/databases/$(database)/documents/locales/$(p)).data.duenos;
+    }
+
+    match /barberias/{codigo}/{coleccion}/{doc} {
+      allow read, write: if conSesion() && codigoOk(codigo)
+                         && coleccion in ['config', 'clientes', 'citas', 'visitas', 'fotos'];
+    }
+
+    match /locales/{p} {
+      allow read: if conSesion() && request.auth.uid in resource.data.duenos;
+
+      allow create: if conSesion()
+                    && p.size() >= 12 && p.size() <= 40 && p.matches('^[A-Za-z0-9]+$')
+                    && request.resource.data.keys().hasOnly(['sello', 'duenos'])
+                    && codigoOk(request.resource.data.sello)
+                    && request.resource.data.duenos == [request.auth.uid];
+
+      // Sumarse como dueño: mismo sello, solo cambia la lista y solo se agrega uno mismo.
+      allow update: if conSesion()
+                    && request.resource.data.sello == resource.data.sello
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['duenos'])
+                    && request.resource.data.duenos.hasAll(resource.data.duenos)
+                    && request.resource.data.duenos.size() <= resource.data.duenos.size() + 1
+                    && request.auth.uid in request.resource.data.duenos
+                    && request.resource.data.duenos.size() <= 20;
+
+      match /llegadas/{id} {
+        allow create: if conSesion()
+                      && exists(/databases/$(database)/documents/locales/$(p))
+                      && request.resource.data.keys().hasOnly(['nombre', 'tel', 'conHora', 'ts'])
+                      && request.resource.data.nombre is string
+                      && request.resource.data.nombre.size() >= 1 && request.resource.data.nombre.size() <= 60
+                      && request.resource.data.tel is string && request.resource.data.tel.size() <= 20
+                      && request.resource.data.conHora is bool
+                      && request.resource.data.ts == request.time;
+        allow read, delete: if esDueno(p);
+      }
+    }
+  }
+}
